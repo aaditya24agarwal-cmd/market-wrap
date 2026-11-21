@@ -1,0 +1,98 @@
+name: Daily Market Wrap
+
+on:
+  schedule:
+    - cron: "0 1 * * *"   # 01:00 UTC = 6:30 AM IST, every day
+  workflow_dispatch:       # lets you also start it by hand from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: pip install -r requirements.txt
+
+      - name: Collect market data
+        run: python collector.py
+
+      - name: Write the post
+        shell: bash
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python writer.py | tee writer_log.txt
+
+      - name: Draw the picture
+        run: python artist.py
+
+      - name: Stamp the draft time
+        run: date -u +%s > draft_time.txt
+
+      - name: Show the draft for review
+        run: |
+          {
+            echo "## Draft post (approve only if you are happy with it)"
+            echo '```'
+            cat post.txt
+            echo '```'
+            echo ""
+            echo "### Checks"
+            grep -E -A1 "characters|NUMBER CHECK" writer_log.txt || true
+            echo ""
+            echo "The picture (card.png) is in the Artifacts section at the bottom of this page."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: draft
+          path: |
+            post.txt
+            card.png
+            draft_time.txt
+
+  publish:
+    needs: draft
+    runs-on: ubuntu-latest
+    environment: approval   # this is where YOUR approval is required
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: pip install requests
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: draft
+
+      - name: Refuse stale drafts
+        run: |
+          age=$(( $(date -u +%s) - $(cat draft_time.txt) ))
+          if [ "$age" -gt 43200 ]; then
+            echo "This draft is more than 12 hours old, so it will not be posted."
+            exit 1
+          fi
+
+      - name: Wait until 8:00 AM IST
+        run: |
+          target=$(TZ=Asia/Kolkata date -d "08:00" +%s)
+          now=$(date +%s)
+          if [ "$now" -lt "$target" ]; then
+            sleep $(( target - now ))
+          fi
+
+      - name: Post to LinkedIn
+        env:
+          LINKEDIN_ACCESS_TOKEN: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
+        run: python poster.py
