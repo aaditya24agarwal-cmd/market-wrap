@@ -1,0 +1,5 @@
+yfinance
+feedparser
+google-genai
+pillow
+requests
